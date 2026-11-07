@@ -31,7 +31,7 @@ class Ledger:
         sql = text('SELECT account_id FROM accounts;')
         logging.debug(sql)
         results = self.connection.execute(sql)
-        return [row[0] for row in results.all()]
+        account_ids = [row[0] for row in results.all()]; self.connection.commit(); return account_ids
 
     def create_account(self, name):
         '''
@@ -79,7 +79,6 @@ class Ledger:
             This means that whenever a connection.execute command is called,
             SQLAlchemy will also call the BEGIN command internally.
             In order for a database modifying command (e.g. INSERT or UPDATE) to actually commit the value,
-            you must call the self.connection.commit() command explicitly.
             It is also possible to enable "autocommit" to automatically commit these changes for you.
             The documentation contains detailed explanations: <https://docs.sqlalchemy.org/en/20/tutorial/dbapi_transactions.html>.
 
@@ -87,36 +86,32 @@ class Ledger:
             This can result in SQL injection vulnerabilities.
         '''
 
-        # insert the transaction
-        sql = text(f'INSERT INTO transactions (debit_account_id, credit_account_id, amount) VALUES ({debit_account_id}, {credit_account_id}, {amount});')
-        logging.debug(sql)
-        self.connection.execute(sql)
-        self.connection.commit()
-
-        # update the debit account balance
-        sql = text(f'SELECT balance FROM balances WHERE account_id = {debit_account_id};')
-        logging.debug(sql)
-        results = self.connection.execute(sql)
-        debit_account_balance = results.first()[0]
-
-        debit_new_balance = debit_account_balance - amount
-        sql = text(f'UPDATE balances SET balance={debit_new_balance} WHERE account_id = {debit_account_id};')
-        logging.debug(sql)
-        self.connection.execute(sql)
-        self.connection.commit()
-
-        
-        # FIXME:
-        # you need to update the credit account balance as well
-        # update credit balance!!! 
-        sql = text(f'SELECT balance FROM balances WHERE account_id = {credit_account_id};')
-        logging.debug(sql)
-        results = self.connection.execute(sql)
-        credit_account_balance = results.first()[0]
-        credit_new_balance = credit_account_balance + amount
-        sql = text(f'UPDATE balances SET balance={credit_new_balance} WHERE account_id = {credit_account_id};')
-        logging.debug(sql)
-        self.connection.execute(sql)
-        self.connection.commit()
-
-
+        with self.connection.begin():
+            # insert the transaction
+            sql = text(f'INSERT INTO transactions (debit_account_id, credit_account_id, amount) VALUES ({debit_account_id}, {credit_account_id}, {amount});')
+            logging.debug(sql)
+            self.connection.execute(sql)
+    
+            # update the debit account balance
+            sql = text(f'SELECT balance FROM balances WHERE account_id = {debit_account_id};')
+            logging.debug(sql)
+            results = self.connection.execute(sql)
+            debit_account_balance = results.first()[0]
+    
+            debit_new_balance = debit_account_balance - amount
+            sql = text(f'UPDATE balances SET balance={debit_new_balance} WHERE account_id = {debit_account_id};')
+            logging.debug(sql)
+            self.connection.execute(sql)
+    
+            
+            # update credit balance!!! 
+            sql = text(f'SELECT balance FROM balances WHERE account_id = {credit_account_id};')
+            logging.debug(sql)
+            results = self.connection.execute(sql)
+            credit_account_balance = results.first()[0]
+            credit_new_balance = credit_account_balance + amount
+            sql = text(f'UPDATE balances SET balance={credit_new_balance} WHERE account_id = {credit_account_id};')
+            logging.debug(sql)
+            self.connection.execute(sql)
+    
+    
