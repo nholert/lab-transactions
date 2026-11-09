@@ -1,9 +1,12 @@
-import sqlalchemy
+import sqlalchemy 
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.sql import text
 import os
+import time
 import logging
+import random
 logging.basicConfig(
-    level=logging.DEBUG,
+    level=logging.WARNING,
     format=f'%(asctime)s.%(msecs)03d - {os.getpid()} - %(message)s',
     datefmt='%Y-%m-%d %H:%M:%S',
 )
@@ -62,60 +65,74 @@ class Ledger:
             logging.debug(sql)
             self.connection.execute(sql)
 
-    def transfer_funds(
-            self,
-            debit_account_id,
-            credit_account_id,
-            amount
-            ):
-        '''
-        This function adds a row to the "transactions" table with the specified input values.
-        It also updates the "balances" table to apply the debits and credits to the appropriate accounts.
+    def transfer_funds(self, debit_account_id, credit_account_id, amount):
 
-        Notice two differences between this function and the code in `create_account`:
-        1. This function does not use the connection.begin() function to start a transaction.
-            When commands are not inside of a transaction block like this,
-            then SQLAlchemy uses implicit transactions by default.
-            This means that whenever a connection.execute command is called,
-            SQLAlchemy will also call the BEGIN command internally.
-            In order for a database modifying command (e.g. INSERT or UPDATE) to actually commit the value,
-            It is also possible to enable "autocommit" to automatically commit these changes for you.
-            The documentation contains detailed explanations: <https://docs.sqlalchemy.org/en/20/tutorial/dbapi_transactions.html>.
+        while True:
+            try:
+                with self.connection.begin():
 
-        2. This code uses f-strings instead of bind parameters.
-            This can result in SQL injection vulnerabilities.
-        '''
+                    # Insert transaction
+                    sql = text(
+                        'INSERT INTO transactions '
+                        '(debit_account_id, credit_account_id, amount) '
+                        'VALUES (:debit_id, :credit_id, :amount);'
+                    )
+                    self.connection.execute(sql, {
+                        'debit_id': debit_account_id,
+                        'credit_id': credit_account_id,
+                        'amount': amount
+                    })
 
-        with self.connection.begin():
-            sql = text('LOCK TABLE balances IN ACCESS EXCLUSIVE MODE;')
-            logging.debug(sql)
-            self.connection.execute(sql)
-            
-            # insert the transaction
-            sql = text(f'INSERT INTO transactions (debit_account_id, credit_account_id, amount) VALUES ({debit_account_id}, {credit_account_id}, {amount});')
-            logging.debug(sql)
-            self.connection.execute(sql)
-    
-            # update the debit account balance
-            sql = text(f'SELECT balance FROM balances WHERE account_id = {debit_account_id};')
-            logging.debug(sql)
-            results = self.connection.execute(sql)
-            debit_account_balance = results.first()[0]
-    
-            debit_new_balance = debit_account_balance - amount
-            sql = text(f'UPDATE balances SET balance={debit_new_balance} WHERE account_id = {debit_account_id};')
-            logging.debug(sql)
-            self.connection.execute(sql)
-    
-            
-            # update credit balance!!! 
-            sql = text(f'SELECT balance FROM balances WHERE account_id = {credit_account_id};')
-            logging.debug(sql)
-            results = self.connection.execute(sql)
-            credit_account_balance = results.first()[0]
-            credit_new_balance = credit_account_balance + amount
-            sql = text(f'UPDATE balances SET balance={credit_new_balance} WHERE account_id = {credit_account_id};')
-            logging.debug(sql)
-            self.connection.execute(sql)
-    
-    
+                    # Lock and read debit account
+                    sql = text(
+                        'SELECT balance FROM balances '
+                        'WHERE account_id = :id FOR UPDATE;'
+                    )
+                    result = self.connection.execute(
+                        sql, {'id': debit_account_id}
+                    )
+                    debit_balance = result.scalar_one()
+
+                    # Update debit account
+                    sql = text(
+                        'UPDATE balances SET balance = :balance '
+                        'WHERE account_id = :id;'
+                    )
+                    self.connection.execute(sql, {
+                        'balance': debit_balance - amount,
+                        'id': debit_account_id
+                    })
+
+                    # Lock and read credit account
+                    sql = text(
+                        'SELECT balance FROM balances '
+                        'WHERE account_id = :id FOR UPDATE;'
+                    )
+                    result = self.connection.execute(
+                        sql, {'id': credit_account_id}
+                    )
+                    credit_balance = result.scalar_one()
+
+                    # Update credit account
+                    sql = text(
+                        'UPDATE balances SET balance = :balance '
+                        'WHERE account_id = :id;'
+                    )
+                    self.connection.execute(sql, {
+                        'balance': credit_balance + amount,
+                        'id': credit_account_id
+                    })
+
+                # All operations succeeded and committed
+                return
+
+            except OperationalError as e:
+                # PostgreSQL deadlock error code
+                if getattr(e.orig, 'sqlstate', None) == '40P01':
+                    logging.warning('Deadlock detected, retrying')
+                    time.sleep(random.uniform(0.001, 0.01))
+                    continue
+
+                # Other database errors should not be ignored
+                raise
+
